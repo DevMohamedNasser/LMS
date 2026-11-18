@@ -1,0 +1,137 @@
+import NextAuth, { type NextAuthOptions } from "next-auth";
+import Credentials from "next-auth/providers/credentials";
+import { jwtDecode } from "jwt-decode";
+
+type UserRole = "admin" | "student";
+
+type ApiTokenPayload = {
+  id: string;
+};
+
+export const NextOptions: NextAuthOptions = {
+  pages: {
+    signIn: "/login",
+  },
+
+  session: {
+    strategy: "jwt",
+  },
+
+  secret: process.env.NEXTAUTH_SECRET,
+
+  providers: [
+    Credentials({
+      name: "credentials",
+
+      credentials: {
+        email: {},
+        password: {},
+        isAdmin: {},
+      },
+
+      async authorize(credentials) {
+        const email = credentials?.email;
+        const password = credentials?.password;
+
+        if (!email || !password) {
+          return null;
+        }
+
+        const isAdmin = credentials?.isAdmin === "true";
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+
+        if (!baseUrl) {
+          throw new Error("API base URL is not configured.");
+        }
+
+        const endpoint = new URL(
+          "auth/login",
+          baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`,
+        );
+        endpoint.searchParams.set("isAdmin", String(isAdmin));
+
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data.message || "Invalid email or password.");
+        }
+
+        const accessToken = data.tokens?.accessToken;
+        const refreshToken = data.tokens?.refreshToken;
+
+        if (
+          typeof accessToken !== "string" ||
+          typeof refreshToken !== "string"
+        ) {
+          throw new Error("Login response did not include valid tokens.");
+        }
+
+        const decodedToken = jwtDecode<ApiTokenPayload>(accessToken);
+
+        if (!decodedToken.id) {
+          throw new Error("Access token does not contain a user ID.");
+        }
+
+        // الـ backend يجب أن يتحقق من صلاحية الدخول كإداري
+        // قبل أن يصدر التوكن عند isAdmin=true.
+        const role: UserRole = isAdmin ? "admin" : "student";
+
+        return {
+          id: decodedToken.id,
+          role,
+          tokens: {
+            accessToken,
+            refreshToken,
+          },
+        };
+      },
+    }),
+  ],
+
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.sub = user.id;
+        token.role = user.role;
+        token.accessToken = user.tokens.accessToken;
+        token.refreshToken = user.tokens.refreshToken;
+      }
+
+      return token;
+    },
+
+    async session({ session, token }) {
+      const role = token.role;
+      const accessToken = token.accessToken;
+
+      if (
+        (role !== "admin" && role !== "student") ||
+        typeof accessToken !== "string"
+      ) {
+        throw new Error("Invalid session token.");
+      }
+
+      session.user = {
+        ...session.user,
+        id: token.sub ?? "",
+        role,
+      };
+
+      session.accessToken = accessToken;
+
+      return session;
+    },
+  },
+};
+
+const handler = NextAuth(NextOptions);
+
+export { handler as GET, handler as POST };
