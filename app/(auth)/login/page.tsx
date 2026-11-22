@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Script from "next/script";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -12,12 +13,13 @@ import {
   Eye,
   EyeOff,
   GraduationCap,
+  LoaderCircle,
   LockKeyhole,
   Mail,
   ShieldCheck,
 } from "lucide-react";
 import { toast } from "react-toastify";
-import { signIn } from "next-auth/react";
+import { signIn, type SignInResponse } from "next-auth/react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -27,6 +29,45 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
+import { enablePushNotifications } from "@/app/push-notification";
+
+/* ------------------------- Google Identity Services ------------------------ */
+
+type GoogleCredentialResponse = {
+  credential?: string;
+};
+
+type GoogleButtonConfig = {
+  type: "icon";
+  theme: "outline" | "filled_blue" | "filled_black";
+  size: "large" | "medium" | "small";
+  shape: "square" | "circle";
+};
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: GoogleCredentialResponse) => void;
+            ux_mode?: "popup" | "redirect";
+            auto_select?: boolean;
+          }) => void;
+          renderButton: (
+            element: HTMLElement,
+            config: GoogleButtonConfig,
+          ) => void;
+        };
+      };
+    };
+  }
+}
+
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+
+/* ---------------------------------- form ----------------------------------- */
 
 const formSchema = z.object({
   email: z.email("Enter a valid email address."),
@@ -35,11 +76,29 @@ const formSchema = z.object({
 
 type LoginFormValues = z.infer<typeof formSchema>;
 type UserRole = "admin" | "student";
+type Pending = "password" | "google" | null;
+
+const ROLES: Array<{ value: UserRole; label: string }> = [
+  { value: "student", label: "Student" },
+  { value: "admin", label: "Admin" },
+];
 
 export default function Login() {
   const router = useRouter();
+  const [role, setRole] = useState<UserRole>("student");
   const [showPassword, setShowPassword] = useState(false);
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [pending, setPending] = useState<Pending>(null);
+  const [googleReady, setGoogleReady] = useState(false);
+
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
+  // The Google callback is registered once, so it reads the latest role and
+  // handler through refs instead of capturing stale values.
+  const roleRef = useRef<UserRole>(role);
+  const credentialHandlerRef = useRef<
+    (response: GoogleCredentialResponse) => Promise<void>
+  >(async () => {});
+
+  const isSigningIn = pending !== null;
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(formSchema),
@@ -49,11 +108,31 @@ export default function Login() {
     },
   });
 
-  async function handleLogin(role: UserRole) {
+  // Shared by every sign-in method.
+  function finishLogin(
+    selectedRole: UserRole,
+    result: SignInResponse | undefined,
+  ) {
+    if (!result?.ok) {
+      toast.error(result?.error || "Sign in failed. Please try again.");
+      return;
+    }
+
+    toast.success("Login successful!");
+
+    // Register this device for push notifications. It runs in the background:
+    // the browser permission prompt must never block the login.
+    void enablePushNotifications();
+
+    router.replace(selectedRole === "admin" ? "/admin" : "/student");
+    router.refresh();
+  }
+
+  async function handlePasswordLogin() {
     const isValid = await form.trigger();
     if (!isValid) return;
 
-    setIsSigningIn(true);
+    setPending("password");
 
     try {
       const { email, password } = form.getValues();
@@ -65,14 +144,7 @@ export default function Login() {
         redirect: false,
       });
 
-      if (!result?.ok) {
-        toast.error(result?.error || "Invalid email or password.");
-        return;
-      }
-
-      toast.success("Login successful!");
-      router.replace(role === "admin" ? "/admin" : "/student");
-      router.refresh();
+      finishLogin(role, result);
     } catch (error) {
       console.error("Login Error:", error);
 
@@ -82,14 +154,80 @@ export default function Login() {
           : "Unable to connect to the server.",
       );
     } finally {
-      setIsSigningIn(false);
+      setPending(null);
     }
   }
 
+  async function handleGoogleCredential(response: GoogleCredentialResponse) {
+    const selectedRole = roleRef.current;
+
+    if (!response.credential) {
+      toast.error("Google did not return a sign-in token.");
+      return;
+    }
+
+    setPending("google");
+
+    try {
+      const result = await signIn("google-id-token", {
+        idToken: response.credential,
+        isAdmin: selectedRole === "admin" ? "true" : "false",
+        redirect: false,
+      });
+
+      finishLogin(selectedRole, result);
+    } catch (error) {
+      console.error("Google Login Error:", error);
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to connect to the server.",
+      );
+    } finally {
+      setPending(null);
+    }
+  }
+
+  roleRef.current = role;
+  credentialHandlerRef.current = handleGoogleCredential;
+
+  // Render the Google icon button once the script is ready.
+  useEffect(() => {
+    if (!googleReady || !GOOGLE_CLIENT_ID) return;
+
+    const google = window.google;
+    const element = googleButtonRef.current;
+    if (!google || !element) return;
+
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: (response) => void credentialHandlerRef.current(response),
+      ux_mode: "popup",
+      auto_select: false,
+    });
+
+    element.innerHTML = "";
+    google.accounts.id.renderButton(element, {
+      type: "icon",
+      theme: "filled_black",
+      size: "large",
+      shape: "circle",
+    });
+  }, [googleReady]);
+
   return (
     <main className="flex min-h-screen flex-col bg-slate-900">
+      {GOOGLE_CLIENT_ID && (
+        <Script
+          src="https://accounts.google.com/gsi/client"
+          strategy="afterInteractive"
+          onReady={() => setGoogleReady(true)}
+        />
+      )}
+
       <header className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-5">
-        <Link href="/login" className="flex items-center gap-2">
+        <Link href="/" className="flex items-center gap-2">
           <div className="flex size-9 items-center justify-center rounded-lg bg-blue-600 text-white">
             <BookOpen className="size-5" />
           </div>
@@ -108,7 +246,7 @@ export default function Login() {
       <div className="flex flex-1 items-center justify-center px-5 py-10">
         <div className="w-full max-w-md">
           <section className="rounded-2xl border border-slate-700 bg-slate-800 p-6 shadow-xl sm:p-9">
-            <div className="mb-8 text-center">
+            <div className="mb-7 text-center">
               <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-blue-600/15 text-blue-400">
                 <GraduationCap className="size-8" />
               </div>
@@ -123,14 +261,45 @@ export default function Login() {
               </h1>
 
               <p className="mt-2 text-sm leading-relaxed text-slate-400">
-                Enter your credentials to access your account.
+                Choose your account type, then sign in.
               </p>
+            </div>
+
+            {/* One switch decides the role for email AND Google sign-in. */}
+            <div
+              role="radiogroup"
+              aria-label="Sign in as"
+              className="mb-6 grid grid-cols-2 gap-1 rounded-xl border border-slate-700 bg-slate-900 p-1"
+            >
+              {ROLES.map((item) => {
+                const selected = role === item.value;
+                const Icon = item.value === "admin" ? ShieldCheck : GraduationCap;
+
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={isSigningIn}
+                    onClick={() => setRole(item.value)}
+                    className={`flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed ${
+                      selected
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    <Icon className="size-4" />
+                    {item.label}
+                  </button>
+                );
+              })}
             </div>
 
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                void handleLogin("student");
+                void handlePasswordLogin();
               }}
             >
               <FieldGroup className="gap-5">
@@ -207,35 +376,65 @@ export default function Login() {
 
               <Button
                 type="submit"
-                variant="default"
                 size="lg"
                 disabled={isSigningIn}
                 className="mt-7 h-12 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm transition-all hover:bg-blue-700 active:scale-[0.99] focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isSigningIn ? (
+                {pending === "password" ? (
                   <>
-                    <span className="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    <LoaderCircle className="size-4 animate-spin" />
                     Signing in...
                   </>
                 ) : (
                   <>
-                    Login as Student
+                    Sign in as {role === "admin" ? "Admin" : "Student"}
                     <ArrowRight className="size-4" />
                   </>
                 )}
               </Button>
-
-              <div className="mt-5 text-center">
-                <button
-                  type="button"
-                  disabled={isSigningIn}
-                  onClick={() => void handleLogin("admin")}
-                  className="text-sm font-semibold text-blue-400 transition hover:text-blue-300 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Login as Admin
-                </button>
-              </div>
             </form>
+
+            {/* ------------------------------ Google ------------------------------ */}
+            {GOOGLE_CLIENT_ID && (
+              <div className="mt-7">
+                <div className="flex items-center gap-3">
+                  <span className="h-px flex-1 bg-slate-700" />
+                  <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    or
+                  </span>
+                  <span className="h-px flex-1 bg-slate-700" />
+                </div>
+
+                <div className="mt-5 flex flex-col items-center gap-3">
+                  <div
+                    aria-busy={pending === "google"}
+                    className={`relative flex size-11 items-center justify-center transition-opacity ${
+                      isSigningIn ? "pointer-events-none opacity-50" : ""
+                    }`}
+                  >
+                    {!googleReady && (
+                      <div className="absolute inset-0 animate-pulse rounded-full bg-slate-700" />
+                    )}
+                    {pending === "google" && (
+                      <LoaderCircle className="absolute size-5 animate-spin text-white" />
+                    )}
+                    <div ref={googleButtonRef} />
+                  </div>
+
+                  <p className="text-center text-xs text-slate-400">
+                    Continue with Google as{" "}
+                    <span className="font-semibold text-slate-200">
+                      {role === "admin" ? "Admin" : "Student"}
+                    </span>
+                    {role === "admin" && (
+                      <span className="mt-1 block text-slate-500">
+                        Existing admin accounts only
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            )}
 
             <p className="mt-7 text-center text-sm text-slate-400">
               Don&apos;t have an account?{" "}

@@ -13,6 +13,13 @@ const authPages = [
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Let Server Actions handle their own authentication.
+  if (request.headers.has("Next-Action")) {
+    return NextResponse.next();
+  }
+
+  
+
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,

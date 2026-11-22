@@ -30,6 +30,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-  ],
+, "app/firebase-messaging-sw.js"  ],
   "exclude": ["node_modules"]
 }
