@@ -8,7 +8,7 @@ import { ErrorBanner, NoticeBanner } from "./shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { resetUserPassword } from "@/app/api/actions";
+import { resetUserPassword } from "@/app/api/admin-actions";
 
 export default function ResetPasswordForm({
   defaultEmail,

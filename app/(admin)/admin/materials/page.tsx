@@ -16,7 +16,7 @@ import {
   deleteMaterial,
   getMaterialUrl,
   listMaterials,
-} from "@/app/api/actions";
+} from "@/app/api/admin-actions";
 import { useAdmin } from "../admin-context";
 import {
   invalidateCache,

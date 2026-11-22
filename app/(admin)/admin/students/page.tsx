@@ -27,7 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { listStudents } from "@/app/api/actions";
+import { listStudents } from "@/app/api/admin-actions";
 
 const PAGE_SIZE = 10;
 

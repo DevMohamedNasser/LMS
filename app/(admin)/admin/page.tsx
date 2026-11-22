@@ -39,7 +39,7 @@
 //   TableHeader,
 //   TableRow,
 // } from "@/components/ui/table";
-// import { getOverview } from "@/app/api/actions";
+// import { getOverview } from "@/app/api/admin-actions";
 // import { useCachedData } from "./cache";
 
 // const RESULTS_PER_PAGE = 5;
@@ -439,7 +439,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { getOverview } from "@/app/api/actions";
+import { getOverview } from "@/app/api/admin-actions";
 import { useCachedData } from "./cache";
 
 const RESULTS_PER_PAGE = 5;

@@ -45,7 +45,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { changeUserRole, getStudentDetail } from "@/app/api/actions";
+import { changeUserRole, getStudentDetail } from "@/app/api/admin-actions";
 
 type RoleValue = "USER" | "ADMIN";
 

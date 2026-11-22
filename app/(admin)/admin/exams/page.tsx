@@ -44,7 +44,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { createExam, listExams } from "@/app/api/actions";
+import { createExam, listExams } from "@/app/api/admin-actions";
 import { invalidateCache, useCachedData } from "../cache";
 
 const LETTERS: AnswerLetter[] = ["a", "b", "c", "d"];
