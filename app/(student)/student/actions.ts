@@ -1,9 +1,4 @@
-"use server";
-
 import { getServerSession } from "next-auth";
-
-import { NextOptions } from "@/app/api/auth/[...nextauth]/route";
-
 import type {
   ActiveExam,
   DashboardData,
@@ -14,38 +9,20 @@ import type {
   RawOption,
   RawQuestion,
   RawRef,
+  RawWrongAnswer,
   StudentMaterial,
   SubmitAnswer,
   SubmitExamResult,
   SubmitWrongAnswer,
 } from "./types";
+import type { ActionResult, ChangePasswordInput } from "./extra-types";
+import { NextOptions } from "@/app/api/auth/[...nextauth]/route";
 
+// شكل الـ response العام من الـ backend
 type ApiEnvelope = {
   message?: string;
-  data?: unknown;
+  data?: any;
 };
-
-type ApiRecord = Record<string, unknown>;
-
-// const LIST_CACHE_TTL = 5 * 60 * 1000;
-
-function asRecord(value: unknown): ApiRecord | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as ApiRecord;
-}
-
-function apiUrl(path: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-
-  if (!baseUrl) {
-    throw new Error("NEXT_PUBLIC_BASE_URL is not configured.");
-  }
-
-  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
-}
 
 async function apiRequest(
   path: string,
@@ -61,7 +38,7 @@ async function apiRequest(
     throw new Error("Your session does not include an access token.");
   }
 
-  const response = await fetch(apiUrl(path), {
+  const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}${path}`, {
     ...init,
     cache: "no-store",
     headers: {
@@ -71,52 +48,37 @@ async function apiRequest(
     },
   });
 
-  const responseData: unknown = await response.json().catch(() => ({}));
-  const data = asRecord(responseData);
+  const data: ApiEnvelope = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const message =
-      typeof data?.message === "string"
-        ? data.message
-        : "The request could not be completed.";
-
-    throw new Error(message);
+    throw new Error(data.message || "The request could not be completed.");
   }
 
-  return (data ?? {}) as ApiEnvelope;
+  return data;
 }
 
+// string / number / { _id | id | text } -> string | null
 function refValue(value: RawRef): string | null {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
+  if (value === null || value === undefined || value === "") return null;
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
   }
-
   if (value._id) return String(value._id);
   if (value.id) return String(value.id);
   if (value.text) return String(value.text);
-
   return null;
 }
 
+// [{ questionId, answer }] -> typed list, or null when the API sent no list
 function parseWrongAnswers(value: unknown): SubmitWrongAnswer[] | null {
   if (!Array.isArray(value)) return null;
 
   const list: SubmitWrongAnswer[] = [];
 
-  for (const rawItem of value) {
-    const item = asRecord(rawItem);
-    if (!item) continue;
-
-    const questionId = refValue(item.questionId as RawRef);
-    const answer = refValue(item.answer as RawRef);
-
-    if (questionId && answer) {
-      list.push({ questionId, answer });
-    }
+  for (const item of value as RawWrongAnswer[]) {
+    const questionId = refValue(item?.questionId);
+    const answer = refValue(item?.answer);
+    if (questionId && answer) list.push({ questionId, answer });
   }
 
   return list;
@@ -126,67 +88,56 @@ function normalizeExamResponse(
   response: ApiEnvelope,
   fallbackId: string,
 ): ActiveExam {
-  const data = asRecord(response.data) ?? {};
-  const examRecord = asRecord(data.exam) ?? data;
-  const exam = examRecord as unknown as RawExam;
+  const data = response?.data ?? {};
+  const exam: RawExam = data.exam ?? data;
+  const questions: RawQuestion[] = exam.questions ?? data.questions ?? [];
 
-  const rawQuestions = Array.isArray(exam.questions)
-    ? exam.questions
-    : Array.isArray(data.questions)
-      ? (data.questions as RawQuestion[])
-      : [];
-
-  const resultRecord = asRecord(data.result);
-
-  // بعض الـ responses ترجع wrongAns على مستوى الامتحان كله.
+  // Some responses send the student's wrong answers once, at exam level:
+  //   wrongAns: [{ questionId, answer }]
   const examLevelWrong = parseWrongAnswers(
-    data.wrongAns ?? resultRecord?.wrongAns ?? exam.wrongAns,
+    data.wrongAns ?? data.result?.wrongAns ?? exam.wrongAns,
   );
-
-  const rawScore = data.score ?? resultRecord?.score;
 
   return {
     id: String(exam._id ?? fallbackId),
     title: String(exam.title ?? "Exam"),
     durationMin: typeof exam.durationMin === "number" ? exam.durationMin : 0,
-    score: typeof rawScore === "number" ? rawScore : null,
+    score: typeof data.score === "number" ? data.score : null,
+    questions: Array.isArray(questions)
+      ? questions.map((question) => {
+          const options = Array.isArray(question.options)
+            ? question.options.map((option: RawOption) => ({
+                id: String(option._id),
+                text: String(option.text ?? ""),
+              }))
+            : [];
 
-    questions: rawQuestions.map((rawQuestion) => {
-      const question = rawQuestion as RawQuestion;
+          // أي قيمة راجعة من الـ API (id أو text) تتحول لـ option id
+          const toOptionId = (value: RawRef): string | null => {
+            const raw = refValue(value);
+            if (!raw) return null;
+            const match = options.find(
+              (option) => option.id === raw || option.text === raw,
+            );
+            return match ? match.id : raw;
+          };
 
-      const options = Array.isArray(question.options)
-        ? question.options.map((rawOption: RawOption) => ({
-            id: String(rawOption._id),
-            text: String(rawOption.text ?? ""),
-          }))
-        : [];
+          const questionId = String(question._id);
+          const examLevelAnswer = examLevelWrong?.find(
+            (item) => item.questionId === questionId,
+          )?.answer;
 
-      // يحوّل id أو نص الاختيار إلى option id.
-      const toOptionId = (value: RawRef): string | null => {
-        const raw = refValue(value);
-        if (!raw) return null;
-
-        const matchingOption = options.find(
-          (option) => option.id === raw || option.text === raw,
-        );
-
-        return matchingOption ? matchingOption.id : raw;
-      };
-
-      const questionId = String(question._id);
-
-      const examLevelAnswer = examLevelWrong?.find(
-        (item) => item.questionId === questionId,
-      )?.answer;
-
-      return {
-        id: questionId,
-        question: String(question.question ?? ""),
-        options,
-        correctAns: toOptionId(question.correctAns),
-        wrongAns: toOptionId(question.wrongAns) ?? toOptionId(examLevelAnswer),
-      };
-    }),
+          return {
+            id: questionId,
+            question: String(question.question ?? ""),
+            correctAns: toOptionId(question.correctAns),
+            wrongAns:
+              toOptionId(question.wrongAns) ??
+              toOptionId(examLevelAnswer ?? null),
+            options,
+          };
+        })
+      : [],
   };
 }
 
@@ -196,12 +147,12 @@ export async function loadStudentDashboardData(): Promise<DashboardData> {
     apiRequest("material/list-all"),
   ]);
 
-  const examData = asRecord(examResponse.data) ?? {};
-  const rawExams = examData.examsTitles ?? examData.exams;
-  const rawMaterials = materialResponse.data;
+  const rawExams: RawExam[] =
+    examResponse?.data?.examsTitles ?? examResponse?.data?.exams ?? [];
+  const rawMaterials: RawMaterial[] = materialResponse?.data ?? [];
 
   const exams: ExamListItem[] = Array.isArray(rawExams)
-    ? (rawExams as RawExam[]).map((exam) => ({
+    ? rawExams.map((exam) => ({
         id: String(exam._id),
         title: String(exam.title ?? "Untitled exam"),
         grade: exam.grade ? String(exam.grade) : null,
@@ -211,23 +162,21 @@ export async function loadStudentDashboardData(): Promise<DashboardData> {
     : [];
 
   const materials: MaterialListItem[] = Array.isArray(rawMaterials)
-    ? (rawMaterials as RawMaterial[]).map((material) => ({
+    ? rawMaterials.map((material) => ({
         id: String(material._id),
         title: String(material.title ?? "Untitled material"),
         content: String(material.content ?? ""),
-        grade:
-          material.grade === null || material.grade === undefined
-            ? null
-            : String(material.grade),
+        grade: material.grade ? String(material.grade) : null,
       }))
     : [];
 
   return { exams, materials };
 }
 
+// أول GET  -> يبدأ الامتحان (أسئلة فقط)
+// تاني GET -> يرجّع الدرجة + اختيارات الطالب + الإجابات الصح
 export async function startStudentExam(examId: string): Promise<ActiveExam> {
   const response = await apiRequest(`exam/${encodeURIComponent(examId)}`);
-
   return normalizeExamResponse(response, examId);
 }
 
@@ -243,38 +192,30 @@ export async function submitStudentExam(
     },
   );
 
-  const responseData = asRecord(submitResponse.data) ?? {};
-  const submittedResult = asRecord(responseData.result) ?? responseData;
+  const submittedResult =
+    submitResponse?.data?.result ?? submitResponse?.data ?? {};
 
   let review: ActiveExam | null = null;
 
   try {
-    // بعد التسليم، هذا الطلب يرجع تفاصيل المراجعة حسب الـ API.
-    const reviewResponse = await apiRequest(
-      `exam/${encodeURIComponent(examId)}`,
+    review = normalizeExamResponse(
+      await apiRequest(`exam/${encodeURIComponent(examId)}`),
+      examId,
     );
-
-    review = normalizeExamResponse(reviewResponse, examId);
   } catch {
-    // التسليم نفسه نجح؛ نستخدم بيانات submit إن تعذر تحميل المراجعة.
+    // التسليم نجح، والـ client هيعيد جلب المراجعة عند الفتح الجاي
   }
 
   const scoreValue = submittedResult.score ?? review?.score;
-  const parsedScore = Number(scoreValue);
-
-  const wrongAnswers = parseWrongAnswers(
-    submittedResult.wrongAns ?? responseData.wrongAns,
-  );
+  const score = Number(scoreValue);
 
   return {
     score:
-      scoreValue !== null &&
-      scoreValue !== undefined &&
-      Number.isFinite(parsedScore)
-        ? parsedScore
+      scoreValue !== null && scoreValue !== undefined && Number.isFinite(score)
+        ? score
         : null,
     review,
-    wrongAnswers,
+    wrongAnswers: parseWrongAnswers(submittedResult.wrongAns),
   };
 }
 
@@ -285,19 +226,38 @@ export async function getStudentMaterialUrl(
     `material/${encodeURIComponent(materialId)}`,
   );
 
-  const data = asRecord(response.data) ?? {};
-  const materialItems = data.material;
-  const firstItem = Array.isArray(materialItems) ? materialItems[0] : null;
-
-  const firstItemRecord = asRecord(firstItem);
-  const url = typeof firstItem === "string" ? firstItem : firstItemRecord?.url;
+  const items = response?.data?.material;
+  const firstItem = Array.isArray(items) ? items[0] : null;
+  const url: unknown =
+    typeof firstItem === "string" ? firstItem : firstItem?.url;
 
   if (typeof url !== "string" || !url) {
     throw new Error("This material does not have a viewable URL.");
   }
 
   return {
-    title: String(data.title ?? "Study material"),
+    title: String(response?.data?.title ?? "Study material"),
     url,
   };
+}
+
+export async function changeStudentPassword(
+  input: ChangePasswordInput,
+): Promise<ActionResult<null>> {
+  try {
+    await apiRequest("auth/reset-password", {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+
+    return { ok: true, data: null };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to update the password.",
+    };
+  }
 }

@@ -21,20 +21,6 @@ export type RawQuestion = {
   wrongAns?: RawRef;
 };
 
-export type RawWrongAnswer = {
-  questionId?: RawRef;
-  answer?: RawRef;
-};
-
-export type RawExam = {
-  _id: string;
-  title?: string;
-  grade?: string | number | null;
-  durationMin?: number;
-  questions?: RawQuestion[];
-  wrongAns?: unknown;
-};
-
 export type RawMaterial = {
   _id: string;
   title?: string;
@@ -89,17 +75,6 @@ export type SubmitAnswer = {
   answer: string;
 };
 
-export type SubmitWrongAnswer = {
-  questionId: string;
-  answer: string;
-};
-
-export type SubmitExamResult = {
-  score: number | null;
-  review: ActiveExam | null;
-  wrongAnswers: SubmitWrongAnswer[] | null;
-};
-
 export type StudentMaterial = {
   title: string;
   url: string;
@@ -133,4 +108,29 @@ export type CachedMaterial = {
   expiresAt: number;
   title: string;
   url: string;
+};
+
+export type RawWrongAnswer = {
+  questionId?: RawRef;
+  answer?: RawRef;
+};
+
+export type RawExam = {
+  _id: string;
+  title?: string;
+  grade?: string | number | null;
+  durationMin?: number;
+  questions?: RawQuestion[];
+  wrongAns?: unknown; // جديد
+};
+
+export type SubmitWrongAnswer = {
+  questionId: string;
+  answer: string; // option id
+};
+
+export type SubmitExamResult = {
+  score: number | null;
+  review: ActiveExam | null;
+  wrongAnswers: SubmitWrongAnswer[] | null; // جديد
 };

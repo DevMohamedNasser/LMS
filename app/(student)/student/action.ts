@@ -186,6 +186,7 @@ export async function submitStudentExam(
         ? score
         : null,
     review,
+    wrongAnswers: null,
   };
 }
 

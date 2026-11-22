@@ -2,85 +2,58 @@
 
 import { getServerSession } from "next-auth";
 import type {
+  ActiveExam,
+  DashboardData,
+  ExamListItem,
+  MaterialListItem,
+  RawExam,
+  RawMaterial,
+  RawOption,
+  RawQuestion,
+  RawRef,
+  RawWrongAnswer,
+  StudentMaterial,
+  SubmitAnswer,
+  SubmitExamResult,
+  SubmitWrongAnswer,
+} from "../(student)/student/types";
+import { NextOptions } from "@/app/api/auth/[...nextauth]/route";
+import {
   ActionResult,
-  AdminExam,
-  AdminMaterial,
-  ExamResultRow,
-  MaterialUrl,
-  NewExamInput,
-  NewMaterialInput,
-  Overview,
-  ResetPasswordInput,
-  Student,
-  StudentDetail,
-  StudentsPage,
-} from "../(admin)/admin/types";
-import { NextOptions } from "./auth/[...nextauth]/route";
+  ChangePasswordInput,
+} from "../(student)/student/extra-types";
 
-// REST API base, for example: http://host/api/v1/
-const API_BASE = process.env.NEXT_PUBLIC_BASE_URL;
+// شكل الـ response العام من الـ backend
+type ApiEnvelope = {
+  message?: string;
+  data?: any;
+};
 
-// GraphQL endpoint, for example: http://host/graphql
-const GRAPHQL_ENDPOINT = process.env.GRAPHQL_URL;
-
-// The backend expects: Authorization: ADMIN <accessToken>
-const AUTH_PREFIX = process.env.ADMIN_AUTH_PREFIX || "ADMIN";
-
-function apiUrl(path: string): string {
-  if (!API_BASE) {
-    throw new Error("NEXT_PUBLIC_BASE_URL is not configured.");
-  }
-
-  return `${API_BASE.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
-}
-
-function getGraphqlUrl(): string {
-  if (!GRAPHQL_ENDPOINT) {
-    throw new Error("GRAPHQL_URL is not configured.");
-  }
-
-  return GRAPHQL_ENDPOINT;
-}
-
-/* --------------------------------- helpers --------------------------------- */
-
-async function requireAdminToken(): Promise<string> {
+async function apiRequest(
+  path: string,
+  init: RequestInit = {},
+): Promise<ApiEnvelope> {
   const session = await getServerSession(NextOptions);
 
-  if (!session || String(session.user.role).toLowerCase() !== "admin") {
-    throw new Error("Please sign in with an admin account.");
+  if (!session || session.user.role !== "student") {
+    throw new Error("Please sign in with a student account.");
   }
 
   if (!session.accessToken) {
     throw new Error("Your session does not include an access token.");
   }
 
-  return session.accessToken;
-}
-
-type Envelope = {
-  message?: string;
-  data?: any;
-  [key: string]: any;
-};
-
-async function rest(
-  path: string,
-  init: RequestInit = {},
-): Promise<Envelope> {
-  const token = await requireAdminToken();
-
-  const response = await fetch(apiUrl(path), {
+  const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}${path}`, {
     ...init,
     cache: "no-store",
     headers: {
-      Authorization: `${AUTH_PREFIX} ${token}`,
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      Authorization: `Bearer ${session.accessToken}`,
+      "Content-Type": "application/json",
       ...init.headers,
     },
   });
 
-  const data: Envelope = await response.json().catch(() => ({}));
+  const data: ApiEnvelope = await response.json().catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(data.message || "The request could not be completed.");
@@ -89,363 +62,207 @@ async function rest(
   return data;
 }
 
-async function gql<T>(
-  query: string,
-  variables: Record<string, unknown> = {},
-): Promise<T> {
-  const token = await requireAdminToken();
-
-  const response = await fetch(getGraphqlUrl(), {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `${AUTH_PREFIX} ${token}`,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const json = await response.json().catch(() => ({}));
-
-  if (!response.ok || json.errors?.length) {
-    throw new Error(
-      json.errors?.[0]?.message ||
-        json.message ||
-        "The GraphQL request failed.",
-    );
+// string / number / { _id | id | text } -> string | null
+function refValue(value: RawRef): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
   }
-
-  return json.data as T;
+  if (value._id) return String(value._id);
+  if (value.id) return String(value.id);
+  if (value.text) return String(value.text);
+  return null;
 }
 
-const str = (value: unknown): string | null =>
-  value === null || value === undefined || value === ""
-    ? null
-    : String(value);
+// [{ questionId, answer }] -> typed list, or null when the API sent no list
+function parseWrongAnswers(value: unknown): SubmitWrongAnswer[] | null {
+  if (!Array.isArray(value)) return null;
 
-function mapExam(raw: Record<string, any>): AdminExam {
+  const list: SubmitWrongAnswer[] = [];
+
+  for (const item of value as RawWrongAnswer[]) {
+    const questionId = refValue(item?.questionId);
+    const answer = refValue(item?.answer);
+    if (questionId && answer) list.push({ questionId, answer });
+  }
+
+  return list;
+}
+
+function normalizeExamResponse(
+  response: ApiEnvelope,
+  fallbackId: string,
+): ActiveExam {
+  const data = response?.data ?? {};
+  const exam: RawExam = data.exam ?? data;
+  const questions: RawQuestion[] = exam.questions ?? data.questions ?? [];
+
+  // Some responses send the student's wrong answers once, at exam level:
+  //   wrongAns: [{ questionId, answer }]
+  const examLevelWrong = parseWrongAnswers(
+    data.wrongAns ?? data.result?.wrongAns ?? exam.wrongAns,
+  );
+
   return {
-    id: String(raw._id),
-    title: String(raw.title ?? "Untitled exam"),
-    grade: str(raw.grade),
-    durationMin: typeof raw.durationMin === "number" ? raw.durationMin : 0,
-    createdAt: str(raw.createdAt),
-    questions: Array.isArray(raw.questions)
-      ? raw.questions.map((question: Record<string, any>) => ({
-          id: String(question._id),
-          question: String(question.question ?? ""),
-          correctAns: str(
-            typeof question.correctAns === "object"
-              ? question.correctAns?._id
-              : question.correctAns,
-          ),
-          options: Array.isArray(question.options)
-            ? question.options.map((option: Record<string, any>) => ({
+    id: String(exam._id ?? fallbackId),
+    title: String(exam.title ?? "Exam"),
+    durationMin: typeof exam.durationMin === "number" ? exam.durationMin : 0,
+    score: typeof data.score === "number" ? data.score : null,
+    questions: Array.isArray(questions)
+      ? questions.map((question) => {
+          const options = Array.isArray(question.options)
+            ? question.options.map((option: RawOption) => ({
                 id: String(option._id),
                 text: String(option.text ?? ""),
               }))
-            : [],
-        }))
+            : [];
+
+          // أي قيمة راجعة من الـ API (id أو text) تتحول لـ option id
+          const toOptionId = (value: RawRef): string | null => {
+            const raw = refValue(value);
+            if (!raw) return null;
+            const match = options.find(
+              (option) => option.id === raw || option.text === raw,
+            );
+            return match ? match.id : raw;
+          };
+
+          const questionId = String(question._id);
+          const examLevelAnswer = examLevelWrong?.find(
+            (item) => item.questionId === questionId,
+          )?.answer;
+
+          return {
+            id: questionId,
+            question: String(question.question ?? ""),
+            correctAns: toOptionId(question.correctAns),
+            wrongAns:
+              toOptionId(question.wrongAns) ??
+              toOptionId(examLevelAnswer ?? null),
+            options,
+          };
+        })
       : [],
   };
 }
 
-function mapMaterial(raw: Record<string, any>): AdminMaterial {
-  return {
-    id: String(raw._id),
-    title: String(raw.title ?? "Untitled material"),
-    content: String(raw.content ?? ""),
-    grade: str(raw.grade),
-  };
+export async function loadStudentDashboardData(): Promise<DashboardData> {
+  const [examResponse, materialResponse] = await Promise.all([
+    apiRequest("exam/list-exams"),
+    apiRequest("material/list-all"),
+  ]);
+
+  const rawExams: RawExam[] =
+    examResponse?.data?.examsTitles ?? examResponse?.data?.exams ?? [];
+  const rawMaterials: RawMaterial[] = materialResponse?.data ?? [];
+
+  const exams: ExamListItem[] = Array.isArray(rawExams)
+    ? rawExams.map((exam) => ({
+        id: String(exam._id),
+        title: String(exam.title ?? "Untitled exam"),
+        grade: exam.grade ? String(exam.grade) : null,
+        durationMin:
+          typeof exam.durationMin === "number" ? exam.durationMin : null,
+      }))
+    : [];
+
+  const materials: MaterialListItem[] = Array.isArray(rawMaterials)
+    ? rawMaterials.map((material) => ({
+        id: String(material._id),
+        title: String(material.title ?? "Untitled material"),
+        content: String(material.content ?? ""),
+        grade: material.grade ? String(material.grade) : null,
+      }))
+    : [];
+
+  return { exams, materials };
 }
 
-function mapStudent(raw: Record<string, any>): Student {
-  return {
-    id: String(raw.id),
-    firstName: String(raw.firstName ?? ""),
-    lastName: String(raw.lastName ?? ""),
-    fullName: String(
-      raw.fullName ?? `${raw.firstName ?? ""} ${raw.lastName ?? ""}`.trim(),
-    ),
-    email: String(raw.email ?? ""),
-    phone: str(raw.phone),
-    address: str(raw.address),
-    grade: str(raw.grade),
-    role: String(raw.role ?? "USER"),
-    createdAt: str(raw.createdAt),
-  };
+// أول GET  -> يبدأ الامتحان (أسئلة فقط)
+// تاني GET -> يرجّع الدرجة + اختيارات الطالب + الإجابات الصح
+export async function startStudentExam(examId: string): Promise<ActiveExam> {
+  const response = await apiRequest(`exam/${encodeURIComponent(examId)}`);
+  return normalizeExamResponse(response, examId);
 }
 
-function mapResult(raw: Record<string, any>): ExamResultRow {
-  return {
-    id: String(raw.id),
-    grade: str(raw.grade),
-    startedAt: str(raw.startedAt),
-    score: typeof raw.score === "number" ? raw.score : null,
-    wrongCount: Array.isArray(raw.wrongAns) ? raw.wrongAns.length : 0,
-    student: raw.student
-      ? {
-          id: String(raw.student.id),
-          fullName: String(raw.student.fullName ?? ""),
-          email: String(raw.student.email ?? ""),
-        }
-      : null,
-    exam: raw.exam
-      ? {
-          id: String(raw.exam.id),
-          title: String(raw.exam.title ?? ""),
-          durationMin:
-            typeof raw.exam.durationMin === "number"
-              ? raw.exam.durationMin
-              : null,
-        }
-      : null,
-  };
-}
-
-/* --------------------------------- GraphQL --------------------------------- */
-
-const USERS_QUERY = /* GraphQL */ `
-  query Users($grade: Int, $page: Int, $limit: Int) {
-    users(grade: $grade, page: $page, limit: $limit) {
-      id
-      firstName
-      lastName
-      fullName
-      email
-      phone
-      address
-      grade
-      role
-      createdAt
-    }
-  }
-`;
-
-const RESULTS_QUERY = /* GraphQL */ `
-  query ExamResults($grade: Int, $page: Int, $limit: Int) {
-    examResults(grade: $grade, page: $page, limit: $limit) {
-      id
-      grade
-      startedAt
-      score
-      student {
-        id
-        fullName
-        email
-      }
-      exam {
-        id
-        title
-        durationMin
-      }
-      wrongAns {
-        questionId
-        answer
-      }
-    }
-  }
-`;
-
-async function fetchUsers(page: number, limit: number, grade?: number) {
-  const data = await gql<{ users: Record<string, any>[] }>(USERS_QUERY, {
-    page,
-    limit,
-    ...(grade ? { grade } : {}),
-  });
-
-  return (data.users ?? []).map(mapStudent);
-}
-
-async function fetchResults(page: number, limit: number, grade?: number) {
-  const data = await gql<{ examResults: Record<string, any>[] }>(
-    RESULTS_QUERY,
+export async function submitStudentExam(
+  examId: string,
+  answers: SubmitAnswer[],
+): Promise<SubmitExamResult> {
+  const submitResponse = await apiRequest(
+    `exam/submit/${encodeURIComponent(examId)}`,
     {
-      page,
-      limit,
-      ...(grade ? { grade } : {}),
+      method: "POST",
+      body: JSON.stringify({ answers }),
     },
   );
 
-  return (data.examResults ?? []).map(mapResult);
-}
+  const submittedResult =
+    submitResponse?.data?.result ?? submitResponse?.data ?? {};
 
-/* ---------------------------------- exams ---------------------------------- */
+  let review: ActiveExam | null = null;
 
-export async function listExams(): Promise<AdminExam[]> {
-  const response = await rest("exam/list-exams");
-  const raw = response.data?.exams ?? [];
-
-  return Array.isArray(raw) ? raw.map(mapExam) : [];
-}
-
-export async function createExam(input: NewExamInput): Promise<void> {
-  await rest("exam/", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-/* -------------------------------- materials -------------------------------- */
-
-export async function listMaterials(): Promise<AdminMaterial[]> {
-  const response = await rest("material/list-all");
-  const raw = response.data ?? [];
-
-  return Array.isArray(raw) ? raw.map(mapMaterial) : [];
-}
-
-// Creates the material record and returns its pre-signed S3 PUT URL.
-// The browser uploads the file directly to S3.
-export async function createMaterial(
-  input: NewMaterialInput,
-): Promise<ActionResult<{ uploadUrl: string }>> {
   try {
-    const response = await rest("material", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
-
-    if (typeof response.data !== "string" || !response.data) {
-      return {
-        ok: false,
-        error: "The server did not return an upload URL.",
-      };
-    }
-
-    return {
-      ok: true,
-      data: { uploadUrl: response.data },
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Unable to create the material.",
-    };
+    review = normalizeExamResponse(
+      await apiRequest(`exam/${encodeURIComponent(examId)}`),
+      examId,
+    );
+  } catch {
+    // التسليم نجح، والـ client هيعيد جلب المراجعة عند الفتح الجاي
   }
+
+  const scoreValue = submittedResult.score ?? review?.score;
+  const score = Number(scoreValue);
+
+  return {
+    score:
+      scoreValue !== null && scoreValue !== undefined && Number.isFinite(score)
+        ? score
+        : null,
+    review,
+    wrongAnswers: parseWrongAnswers(submittedResult.wrongAns),
+  };
 }
 
-export async function deleteMaterial(materialId: string): Promise<void> {
-  await rest(`material/${encodeURIComponent(materialId)}`, {
-    method: "DELETE",
-  });
-}
-
-export async function getMaterialUrl(
+export async function getStudentMaterialUrl(
   materialId: string,
-): Promise<MaterialUrl> {
-  const response = await rest(`material/${encodeURIComponent(materialId)}`);
+): Promise<StudentMaterial> {
+  const response = await apiRequest(
+    `material/${encodeURIComponent(materialId)}`,
+  );
 
-  const items = response.data?.material;
-  const first = Array.isArray(items) ? items[0] : null;
-  const url: unknown = typeof first === "string" ? first : first?.url;
+  const items = response?.data?.material;
+  const firstItem = Array.isArray(items) ? items[0] : null;
+  const url: unknown =
+    typeof firstItem === "string" ? firstItem : firstItem?.url;
 
   if (typeof url !== "string" || !url) {
     throw new Error("This material does not have a viewable URL.");
   }
 
   return {
-    title: String(response.data?.title ?? "Material"),
+    title: String(response?.data?.title ?? "Study material"),
     url,
   };
 }
 
-/* --------------------------------- students -------------------------------- */
+export async function changeStudentPassword(
+  input: ChangePasswordInput,
+): Promise<ActionResult<null>> {
+  try {
+    await apiRequest("auth/reset-password", {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
 
-export async function listStudents(
-  page: number,
-  limit: number,
-  grade?: number,
-): Promise<StudentsPage> {
-  const safeLimit = Math.min(Math.max(limit, 1), 50);
-  const students = await fetchUsers(page, safeLimit, grade);
-
-  return {
-    students,
-    page,
-    limit: safeLimit,
-    hasMore: students.length === safeLimit,
-  };
-}
-
-// The GraphQL schema has no "user by id" or "results by student" query,
-// so page through the lists and filter on the server.
-export async function getStudentDetail(
-  studentId: string,
-): Promise<StudentDetail> {
-  const MAX_PAGES = 10;
-  const LIMIT = 50;
-
-  let student: Student | null = null;
-
-  for (let page = 1; page <= MAX_PAGES && !student; page += 1) {
-    const users = await fetchUsers(page, LIMIT);
-    student = users.find((user) => user.id === studentId) ?? null;
-
-    if (users.length < LIMIT) break;
+    return { ok: true, data: null };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to update the password.",
+    };
   }
-
-  if (!student) {
-    throw new Error("Student not found.");
-  }
-
-  const results: ExamResultRow[] = [];
-
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const rows = await fetchResults(page, LIMIT);
-    results.push(...rows.filter((row) => row.student?.id === studentId));
-
-    if (rows.length < LIMIT) break;
-  }
-
-  return { student, results };
-}
-
-export async function changeUserRole(
-  userId: string,
-  role: "USER" | "ADMIN",
-): Promise<void> {
-  await rest(`auth/role/${encodeURIComponent(userId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ role }),
-  });
-}
-
-export async function resetUserPassword(
-  input: ResetPasswordInput,
-): Promise<void> {
-  await rest("auth/reset-password", {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-/* -------------------------------- overview --------------------------------- */
-
-export async function getOverview(): Promise<Overview> {
-  const [exams, materials, users, results] = await Promise.all([
-    listExams(),
-    listMaterials(),
-    fetchUsers(1, 50),
-    fetchResults(1, 50),
-  ]);
-
-  const scored = results.filter((row) => row.score !== null);
-  const averageScore = scored.length
-    ? scored.reduce((sum, row) => sum + (row.score ?? 0), 0) / scored.length
-    : null;
-
-  return {
-    examCount: exams.length,
-    materialCount: materials.length,
-    studentCount: users.filter((user) => user.role !== "ADMIN").length,
-    studentCountCapped: users.length === 50,
-    averageScore,
-    recentExams: exams.slice(0, 5),
-    recentMaterials: materials.slice(0, 5),
-    recentResults: results.slice(0, 6),
-  };
 }
