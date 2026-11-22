@@ -41,7 +41,7 @@ async function apiRequest(
     ...init,
     cache: "no-store",
     headers: {
-      Authorization: `Bearer ${session.accessToken}`,
+      authorization: `${session.user.role} ${session.accessToken}`,
       "Content-Type": "application/json",
       ...init.headers,
     },

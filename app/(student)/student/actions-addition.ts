@@ -40,7 +40,7 @@ export async function changeStudentPassword(
         method: "PATCH",
         cache: "no-store",
         headers: {
-          Authorization: `Bearer ${session.accessToken}`,
+          authorization: `${session.user.role} ${session.accessToken}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(input),
