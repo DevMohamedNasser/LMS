@@ -1,12 +1,10 @@
-// import { NextOptions } from '@/app/api/auth/[...nextauth]/route'
-// import { getServerSession } from 'next-auth'
-// import { useSession } from 'next-auth/react';
-import React from 'react'
+import StudentFrame from "../student-frame";
+import ExamsClient from "./exams-client";
 
-export default async function page() {
-  // const {status} = useSession();
-  // console.log(status);
+export default function StudentExamsPage() {
   return (
-    <div>page</div>
-  )
+    <StudentFrame
+      render={(student) => <ExamsClient studentId={student.id} />}
+    />
+  );
 }

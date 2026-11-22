@@ -1,7 +1,16 @@
-import React from 'react'
+import StudentFrame from "../student-frame";
+import ProfileClient from "./profile-client";
 
-export default function page() {
+export default function StudentProfilePage() {
   return (
-    <div>page</div>
-  )
+    <StudentFrame
+      render={(student) => (
+        <ProfileClient
+          studentId={student.id}
+          studentName={student.name}
+          studentEmail={student.email}
+        />
+      )}
+    />
+  );
 }

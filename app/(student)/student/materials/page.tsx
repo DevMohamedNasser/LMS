@@ -1,7 +1,10 @@
-import React from 'react'
+import StudentFrame from "../student-frame";
+import MaterialsClient from "./materials-client";
 
-export default function page() {
+export default function StudentMaterialsPage() {
   return (
-    <div>page</div>
-  )
+    <StudentFrame
+      render={(student) => <MaterialsClient studentId={student.id} />}
+    />
+  );
 }

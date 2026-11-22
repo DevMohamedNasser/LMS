@@ -5,6 +5,7 @@ type UserRole = "admin" | "student";
 declare module "next-auth" {
   interface User {
     role: UserRole;
+    grade?: number;
     tokens: {
       accessToken: string;
       refreshToken: string;
@@ -15,6 +16,7 @@ declare module "next-auth" {
     user: {
       id: string;
       role: UserRole;
+      grade?: number;
     } & DefaultSession["user"];
 
     accessToken: string;

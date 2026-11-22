@@ -1,7 +1,10 @@
-import React from 'react'
+import StudentFrame from "../student-frame";
+import ResultsClient from "./results-client";
 
-export default function page() {
+export default function StudentResultsPage() {
   return (
-    <div>page</div>
-  )
+    <StudentFrame
+      render={(student) => <ResultsClient studentId={student.id} />}
+    />
+  );
 }
